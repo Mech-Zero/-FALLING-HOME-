@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Babylon.js - Управляемая планета</title>
+    <style>
+        html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
+        #renderCanvas { width: 100%; height: 100%; touch-action: none; }
+        #infoPanel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-family: Arial, sans-serif;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 8px;
+            z-index: 100;
+        }
+        #hintPanel {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: white;
+            font-family: Arial, sans-serif;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 8px;
+            z-index: 100;
+        }
+        .point-tooltip {
+            position: absolute;
+            color: white;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 5px 10px;
+            border-radius: 3px;
+            font-family: Arial;
+            font-size: 12px;
+            pointer-events: none;
+            transform: translate(-50%, -100%);
+            z-index: 101;
+            display: none;
+        }
+        .controls {
+            margin-top: 10px;
+        }
+        .control-btn {
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: white;
+            padding: 5px 10px;
+            margin: 0 5px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+    </style>
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+</head>
+<body>
+    <div id="infoPanel">
+        <div>Дистанция до земли: <span id="distanceValue">0</span></div>
+        <div>Диаметр земли: <span id="diameterValue">10</span></div>
+        <div class="controls">
+            <button class="control-btn" id="decreaseSize">- Уменьшить</button>
+            <button class="control-btn" id="increaseSize">+ Увеличить</button>
+        </div>
+    </div>
+    
+    <div id="hintPanel">
+        <strong>Управление:</strong>
+        <ul>
+            <li>ЛКМ + движение - вращение камеры</li>
+            <li>Колёсико мыши - приближение/отдаление</li>
+            <li>Стрелки вверх/вниз - изменить размер планеты</li>
+            <li>Клик по точкам - переход по ссылке</li>
+        </ul>
+    </div>
+    
+    <canvas id="renderCanvas"></canvas>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            // Инициализация
+            const canvas = document.getElementById("renderCanvas");
+            const engine = new BABYLON.Engine(canvas, true);
+            const scene = new BABYLON.Scene(engine);
+            scene.clearColor = new BABYLON.Color4(0.1, 0.1, 0.2, 1);
+            scene.collisionsEnabled = true; // Включаем коллизии для кликов
+
+            // Планета
+            let planetDiameter = 10;
+            const planet = BABYLON.MeshBuilder.CreateSphere(
+                "planet", 
+                { diameter: planetDiameter }, 
+                scene
+            );
+            planet.rotation.x = Math.PI;
+            
+            // Материал планеты
+            const planetMat = new BABYLON.StandardMaterial("planetMat", scene);
+            try {
+                planetMat.diffuseTexture = new BABYLON.Texture(
+                    "https://assets.babylonjs.com/textures/earth.jpg", 
+                    scene
+                );
+            } catch (e) {
+                console.warn("Ошибка загрузки текстуры:", e);
+                planetMat.diffuseColor = new BABYLON.Color3(0.2, 0.5, 0.8);
+            }
+            planet.material = planetMat;
+
+            // Камера - устанавливаем начальное расстояние
+            const initialDistance = planetDiameter * 70;
+            const camera = new BABYLON.ArcRotateCamera(
+                "camera", 
+                -Math.PI / 2, 
+                Math.PI / 3, 
+                initialDistance,
+                BABYLON.Vector3.Zero(), 
+                scene
+            );
+            camera.attachControl(canvas, true);
+            camera.upperRadiusLimit = planetDiameter * 80;
+            camera.lowerRadiusLimit = planetDiameter;
+
+            // Освещение
+            const light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
+            light.intensity = 0.7;
+            light.groundColor = new BABYLON.Color3(0.5, 0.5, 0.5);
+            light.diffuse = new BABYLON.Color3(1, 1, 1);
+
+            // Точки интереса на планете
+            const pointsOfInterest = [
+                {
+                    name: "Mech-Zero",
+                    latitude: 20.0202,
+                    longitude: 50.5050,
+                    color: new BABYLON.Color3(1, 0.5, 0),
+                    showDistance: 10,
+                    url: "https://t.me/+rdy-hO3m1vVlOGUy"
+                },
+                {
+                    name: "Кузница",
+                    latitude: 25.5252,
+                    longitude: 52.5252,
+                    color: new BABYLON.Color3(1, 1, 0),
+                    showDistance: 10,
+                    url: "https://mechzero.itch.io/"
+                },
+                {
+                    name: "Неизвестный сигнал",
+                    latitude: 70.5252,
+                    longitude: 66.6666,
+                    color: new BABYLON.Color3(0, 1, 0),
+                    showDistance: 0,
+                    url: "https://xcraft.ru/tutorial/lab/ark/index.html"
+                }
+            ];
+
+            // Создаём точки и подсказки
+            const pointMeshes = [];
+            const tooltips = [];
+
+            // Функция для преобразования географических координат в 3D позицию
+            function getPositionFromLatLong(lat, long, radius) {
+                const phi = (90 - lat) * (Math.PI / 180);
+                const theta = (long + 90) * (Math.PI / 180);
+                
+                return new BABYLON.Vector3(
+                    radius * Math.sin(phi) * Math.cos(theta),
+                    radius * Math.cos(phi),
+                    radius * Math.sin(phi) * Math.sin(theta)
+                );
+            }
+
+            pointsOfInterest.forEach((point, index) => {
+                // Создаём точку
+                const pointMesh = BABYLON.MeshBuilder.CreateSphere(
+                    `point-${index}`, 
+                    { diameter: 0.5 }, 
+                    scene
+                );
+                
+                // Позиционируем точку
+                const pointPosition = getPositionFromLatLong(
+                    point.latitude, 
+                    point.longitude, 
+                    planetDiameter * 1.4
+                );
+                pointMesh.position = pointPosition;
+                
+                // Делаем точку дочерним объектом планеты
+                pointMesh.parent = planet;
+                
+                // Настраиваем материал точки
+                const pointMat = new BABYLON.StandardMaterial(`pointMat-${index}`, scene);
+                pointMat.emissiveColor = point.color;
+                pointMat.diffuseColor = point.color;
+                pointMesh.material = pointMat;
+                
+                // Создаём подсказку
+                const tooltip = document.createElement("div");
+                tooltip.className = "point-tooltip";
+                tooltip.textContent = point.name;
+                document.body.appendChild(tooltip);
+                
+                pointMeshes.push(pointMesh);
+                tooltips.push(tooltip);
+                
+                // Добавляем анимацию свечения
+                let glowIntensity = 0;
+                scene.registerBeforeRender(() => {
+                    glowIntensity += 0.05;
+                    pointMat.emissiveColor = point.color.scale(0.5 + Math.abs(Math.sin(glowIntensity)) * 0.5);
+                });
+
+                // Добавляем обработчик клика
+                pointMesh.actionManager = new BABYLON.ActionManager(scene);
+                pointMesh.actionManager.registerAction(
+                    new BABYLON.ExecuteCodeAction(
+                        BABYLON.ActionManager.OnPickTrigger,
+                        function() {
+                            if (point.url) {
+                                window.open(point.url, "_blank");
+                            }
+                        }
+                    )
+                );
+
+                // Увеличиваем область клика
+                pointMesh.ellipsoid = new BABYLON.Vector3(1, 1, 1);
+            });
+
+            // Функция проверки видимости точки
+            function isPointVisible(pointMesh, pointIndex, distance) {
+                const point = pointsOfInterest[pointIndex];
+                
+                if (point.showDistance > 0 && distance > point.showDistance * planetDiameter) {
+                    return false;
+                }
+                
+                const worldPos = pointMesh.getAbsolutePosition();
+                const cameraToPoint = worldPos.subtract(camera.position);
+                const cameraToPlanet = planet.position.subtract(camera.position);
+                
+                const dotProduct = BABYLON.Vector3.Dot(
+                    cameraToPoint.normalize(),
+                    cameraToPlanet.normalize()
+                );
+                
+                const screenCoords = BABYLON.Vector3.Project(
+                    worldPos,
+                    BABYLON.Matrix.Identity(),
+                    scene.getTransformMatrix(),
+                    camera.viewport.toGlobal(
+                        engine.getRenderWidth(),
+                        engine.getRenderHeight()
+                    )
+                );
+                
+                const isOnScreen = screenCoords.z > 0 && screenCoords.z < 1 && 
+                                  screenCoords.x >= 0 && screenCoords.x <= engine.getRenderWidth() && 
+                                  screenCoords.y >= 0 && screenCoords.y <= engine.getRenderHeight();
+                
+                return dotProduct > 0 && isOnScreen;
+            }
+
+            // Функция изменения размера планеты
+            function updatePlanetSize(newDiameter) {
+                planetDiameter = Math.max(4, Math.min(40, newDiameter));
+                planet.scaling = new BABYLON.Vector3(
+                    planetDiameter / 10, 
+                    planetDiameter / 10, 
+                    planetDiameter / 10
+                );
+                document.getElementById("diameterValue").textContent = planetDiameter.toFixed(1);
+                
+                pointsOfInterest.forEach((point, index) => {
+                    const pointPosition = getPositionFromLatLong(
+                        point.latitude, 
+                        point.longitude, 
+                        planetDiameter * 1.4
+                    );
+                    pointMeshes[index].position = pointPosition;
+                });
+                
+                camera.upperRadiusLimit = planetDiameter * 80;
+                camera.lowerRadiusLimit = planetDiameter;
+            }
+
+            // Обработчики кнопок
+            document.getElementById("increaseSize").addEventListener("click", () => {
+                updatePlanetSize(planetDiameter + 2);
+            });
+            
+            document.getElementById("decreaseSize").addEventListener("click", () => {
+                updatePlanetSize(planetDiameter - 2);
+            });
+
+            // Обработчики клавиш стрелок
+            document.addEventListener("keydown", (e) => {
+                if (e.key === "ArrowUp") {
+                    updatePlanetSize(planetDiameter + 2);
+                } else if (e.key === "ArrowDown") {
+                    updatePlanetSize(planetDiameter - 2);
+                }
+            });
+
+            // Анимация и логика
+            scene.registerBeforeRender(function() {
+                planet.rotation.y += 0.004;
+                
+                const distance = BABYLON.Vector3.Distance(camera.position, planet.position);
+                const maxDistance = planetDiameter * 10;
+                
+                document.getElementById("distanceValue").textContent = distance.toFixed(2);
+                
+                planet.setEnabled(distance <= maxDistance);
+                
+                pointMeshes.forEach((pointMesh, index) => {
+                    const tooltip = tooltips[index];
+                    if (isPointVisible(pointMesh, index, distance)) {
+                        const worldPos = pointMesh.getAbsolutePosition();
+                        const screenCoords = BABYLON.Vector3.Project(
+                            worldPos,
+                            BABYLON.Matrix.Identity(),
+                            scene.getTransformMatrix(),
+                            camera.viewport.toGlobal(
+                                engine.getRenderWidth(),
+                                engine.getRenderHeight()
+                            )
+                        );
+                        tooltip.style.display = "block";
+                        tooltip.style.left = `${screenCoords.x}px`;
+                        tooltip.style.top = `${screenCoords.y}px`;
+                    } else {
+                        tooltip.style.display = "none";
+                    }
+                });
+            });
+
+            // Рендер
+            engine.runRenderLoop(function() {
+                scene.render();
+            });
+
+            // Ресайз
+            window.addEventListener("resize", function() {
+                engine.resize();
+            });
+        });
+    </script>
+</body>
+</html>
